@@ -295,6 +295,81 @@ void test_builder_hat_custom_raw_values(void)
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
+ *  Changed-value return tests
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+void test_builder_button_returns_true_on_change(void)
+{
+    hid_gamepad_layout_t l = {0};
+    hid_gamepad_layout_add_button(&l, 1, 0);
+    hid_gamepad_report_buf_t r;
+    hid_gamepad_report_init(&r, &l);
+
+    /* Button starts released (0); pressing it changes the report */
+    TEST_ASSERT_TRUE(hid_gamepad_report_set_button(&r, 0, 1));
+    /* Same value again — no change */
+    TEST_ASSERT_FALSE(hid_gamepad_report_set_button(&r, 0, 1));
+    /* Release — changes the report */
+    TEST_ASSERT_TRUE(hid_gamepad_report_set_button(&r, 0, 0));
+    /* Already released — no change */
+    TEST_ASSERT_FALSE(hid_gamepad_report_set_button(&r, 0, 0));
+}
+
+void test_builder_button_hysteresis_no_change(void)
+{
+    /* on=100, off=50: values in the dead zone (51–99) don't change state */
+    hid_gamepad_layout_t l = {0};
+    hid_gamepad_layout_add_button(&l, 100, 50);
+    hid_gamepad_report_buf_t r;
+    hid_gamepad_report_init(&r, &l);
+
+    /* Start released; value in dead zone doesn't change anything */
+    TEST_ASSERT_FALSE(hid_gamepad_report_set_button(&r, 0, 75));
+    /* Press it */
+    TEST_ASSERT_TRUE(hid_gamepad_report_set_button(&r, 0, 100));
+    /* Dead zone again — stays pressed, no change */
+    TEST_ASSERT_FALSE(hid_gamepad_report_set_button(&r, 0, 75));
+}
+
+void test_builder_hat_returns_true_on_change(void)
+{
+    hid_gamepad_layout_t l = {0};
+    hid_gamepad_layout_add_hat(&l, HAT8_CENTERED, hat8_positions, 8);
+    hid_gamepad_report_buf_t r;
+    hid_gamepad_report_init(&r, &l);
+
+    /* Hat starts centered; moving to North changes it */
+    TEST_ASSERT_TRUE(hid_gamepad_report_set_hat(&r, 0, 0));
+    /* Same direction — no change */
+    TEST_ASSERT_FALSE(hid_gamepad_report_set_hat(&r, 0, 0));
+    /* Move to East — changes */
+    TEST_ASSERT_TRUE(hid_gamepad_report_set_hat(&r, 0, 2));
+    /* Back to centered — changes */
+    TEST_ASSERT_TRUE(hid_gamepad_report_set_hat(&r, 0, HAT8_CENTERED));
+    /* Already centered — no change */
+    TEST_ASSERT_FALSE(hid_gamepad_report_set_hat(&r, 0, HAT8_CENTERED));
+}
+
+void test_builder_axis_returns_true_on_change(void)
+{
+    hid_gamepad_layout_t l = {0};
+    hid_gamepad_layout_add_axis(&l, 0x30, -32767, 32767);
+    hid_gamepad_report_buf_t r;
+    hid_gamepad_report_init(&r, &l);
+
+    /* Axis starts at 0; moving it changes the report */
+    TEST_ASSERT_TRUE(hid_gamepad_report_set_axis(&r, 0, 1000));
+    /* Same value — no change */
+    TEST_ASSERT_FALSE(hid_gamepad_report_set_axis(&r, 0, 1000));
+    /* Different value — changes */
+    TEST_ASSERT_TRUE(hid_gamepad_report_set_axis(&r, 0, -1000));
+    /* Back to zero — changes */
+    TEST_ASSERT_TRUE(hid_gamepad_report_set_axis(&r, 0, 0));
+    /* Zero again — no change */
+    TEST_ASSERT_FALSE(hid_gamepad_report_set_axis(&r, 0, 0));
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
  *  Scaling tests (non-identity ranges — verify internal conversion)
  * ═══════════════════════════════════════════════════════════════════════ */
 
