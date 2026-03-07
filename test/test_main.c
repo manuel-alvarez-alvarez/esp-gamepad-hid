@@ -32,6 +32,14 @@ extern void test_builder_report_init_zeros(void);
 extern void test_builder_report_set_button(void);
 extern void test_builder_report_set_axis(void);
 extern void test_builder_report_matches_packed_struct(void);
+extern void test_builder_hat_report_size(void);
+extern void test_builder_hat_init_centered(void);
+extern void test_builder_hat_set_direction(void);
+extern void test_builder_hat_two_hats_packed(void);
+extern void test_builder_hat_with_buttons_offsets(void);
+extern void test_builder_hat_out_of_range_returns_false(void);
+extern void test_builder_hat_custom_raw_values(void);
+
 extern void test_builder_scale_axis_endpoints(void);
 extern void test_builder_scale_axis_midpoint(void);
 extern void test_builder_scale_axis_signed_range(void);
@@ -62,6 +70,15 @@ int main(int argc, char *argv[])
     RUN_FILTERED_TEST(test_builder_report_set_button);
     RUN_FILTERED_TEST(test_builder_report_set_axis);
     RUN_FILTERED_TEST(test_builder_report_matches_packed_struct);
+
+    /* Builder: hat switches */
+    RUN_FILTERED_TEST(test_builder_hat_report_size);
+    RUN_FILTERED_TEST(test_builder_hat_init_centered);
+    RUN_FILTERED_TEST(test_builder_hat_set_direction);
+    RUN_FILTERED_TEST(test_builder_hat_two_hats_packed);
+    RUN_FILTERED_TEST(test_builder_hat_with_buttons_offsets);
+    RUN_FILTERED_TEST(test_builder_hat_out_of_range_returns_false);
+    RUN_FILTERED_TEST(test_builder_hat_custom_raw_values);
 
     /* Builder: scaling */
     RUN_FILTERED_TEST(test_builder_scale_axis_endpoints);

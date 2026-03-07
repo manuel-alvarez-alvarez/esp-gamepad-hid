@@ -15,6 +15,9 @@
 #define DESC_HEADER_SIZE    6   /* Usage Page + Usage + Collection */
 #define DESC_BUTTONS_SIZE  16   /* Button usage page + min/max/size/count + input */
 #define DESC_PADDING_SIZE   6   /* report Size + Report Count + Input (Const) */
+#define DESC_HAT_HDR_SIZE   2   /* Usage Page (Generic Desktop) */
+#define DESC_HAT_EACH_SIZE 19   /* Per-hat: usage + log/phys min/max + unit + size/count + input */
+#define DESC_HAT_FOOTER_SIZE 2  /* Unit (None) reset after hats */
 #define DESC_AXIS_HDR_SIZE  2   /* Usage Page (Generic Desktop) */
 #define DESC_AXIS_USAGE_SIZE 2  /* Per-axis usage entry */
 #define DESC_AXIS_TAIL_SIZE 12  /* Logical min/max + report size/count + input */
@@ -34,15 +37,15 @@ static size_t emit(uint8_t *buf, size_t pos, size_t cap,
 static uint16_t fnv1a_16(const char *str) {
     uint32_t h = 0x811c9dc5;
     for (; *str; str++) {
-        h ^= (uint8_t)*str;
+        h ^= (uint8_t) *str;
         h *= 0x01000193;
     }
     /* XOR-fold 32-bit to 16-bit */
-    return (uint16_t)((h >> 16) ^ (h & 0xFFFF));
+    return (uint16_t) ((h >> 16) ^ (h & 0xFFFF));
 }
 
 static int16_t scale_axis(int32_t val, int32_t in_min, int32_t in_max) {
-    return (int16_t) (((int64_t)(val - in_min) * HID_AXIS_RANGE) / (in_max - in_min) + HID_AXIS_MIN);
+    return (int16_t) (((int64_t) (val - in_min) * HID_AXIS_RANGE) / (in_max - in_min) + HID_AXIS_MIN);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -55,6 +58,13 @@ static size_t hid_gamepad_desc_size(const hid_gamepad_layout_t *layout) {
         size += DESC_BUTTONS_SIZE;
         uint8_t padding = (8 - (layout->button_count % 8)) % 8;
         if (padding > 0)
+            size += DESC_PADDING_SIZE;
+    }
+    if (layout->hat_count > 0) {
+        size += DESC_HAT_HDR_SIZE
+                + (size_t) layout->hat_count * DESC_HAT_EACH_SIZE
+                + DESC_HAT_FOOTER_SIZE;
+        if (layout->hat_count % 2 != 0)
             size += DESC_PADDING_SIZE;
     }
     if (layout->axis_count > 0)
@@ -101,9 +111,46 @@ static size_t hid_gamepad_desc_build(const hid_gamepad_layout_t *layout,
         uint8_t padding = (8 - (layout->button_count % 8)) % 8;
         if (padding > 0) {
             const uint8_t pad[] = {
-                0x75, padding,  /* Report Size (padding bits) */
-                0x95, 0x01,     /* Report Count (1) */
-                0x81, 0x01,     /* Input (Const) */
+                0x75, padding, /* Report Size (padding bits) */
+                0x95, 0x01, /* Report Count (1) */
+                0x81, 0x01, /* Input (Const) */
+            };
+            p += emit(buf, p, buf_size, pad, sizeof(pad));
+        }
+    }
+
+    /* Hats */
+    if (layout->hat_count > 0) {
+        const uint8_t hat_hdr[] = {0x05, 0x01}; /* Usage Page (Generic Desktop) */
+        p += emit(buf, p, buf_size, hat_hdr, sizeof(hat_hdr));
+
+        for (uint8_t h = 0; h < layout->hat_count; h++) {
+            uint8_t count = layout->hats[h].count;
+            uint16_t phys_max = (count - 1) * 360 / count;
+            const uint8_t hat[] = {
+                0x09, 0x39, /* Usage (Hat Switch) */
+                0x15, 0x00, /* Logical Minimum (0) */
+                0x25, (uint8_t) (count - 1), /* Logical Maximum */
+                0x35, 0x00, /* Physical Minimum (0) */
+                0x46, LO8(phys_max), HI8(phys_max), /* Physical Maximum (degrees) */
+                0x65, 0x14, /* Unit (Eng Rotation: Degrees) */
+                0x75, 0x04, /* Report Size (4) */
+                0x95, 0x01, /* Report Count (1) */
+                0x81, 0x42, /* Input (Data,Var,Abs,Null) */
+            };
+            p += emit(buf, p, buf_size, hat, sizeof(hat));
+        }
+
+        /* Reset unit */
+        const uint8_t unit_reset[] = {0x65, 0x00}; /* Unit (None) */
+        p += emit(buf, p, buf_size, unit_reset, sizeof(unit_reset));
+
+        /* Pad to byte boundary if odd number of hats (each is 4 bits) */
+        if (layout->hat_count % 2 != 0) {
+            const uint8_t pad[] = {
+                0x75, 0x04, /* Report Size (4) */
+                0x95, 0x01, /* Report Count (1) */
+                0x81, 0x01, /* Input (Const) */
             };
             p += emit(buf, p, buf_size, pad, sizeof(pad));
         }
@@ -150,6 +197,18 @@ void hid_gamepad_layout_add_button(hid_gamepad_layout_t *layout,
     }
 }
 
+void hid_gamepad_layout_add_hat(hid_gamepad_layout_t *layout,
+                                int32_t centered,
+                                const int32_t *positions, uint8_t count) {
+    if (layout->hat_count < HID_GAMEPAD_MAX_HATS && count <= HID_GAMEPAD_MAX_HAT_POSITIONS) {
+        hid_gamepad_hat_def_t *hat = &layout->hats[layout->hat_count];
+        hat->count = count;
+        hat->centered = centered;
+        memcpy(hat->positions, positions, count * sizeof(int32_t));
+        layout->hat_count++;
+    }
+}
+
 void hid_gamepad_layout_add_axis(hid_gamepad_layout_t *layout,
                                  uint8_t usage, int32_t in_min, int32_t in_max) {
     if (layout->axis_count < HID_GAMEPAD_MAX_AXES) {
@@ -167,9 +226,21 @@ void hid_gamepad_layout_add_axis(hid_gamepad_layout_t *layout,
 void hid_gamepad_report_init(hid_gamepad_report_buf_t *report, hid_gamepad_layout_t *layout) {
     memset(report, 0, sizeof(*report));
     report->layout = layout;
-    report->size = (layout->button_count + 7) / 8
-                   + (uint16_t) layout->axis_count * 2;
-    report->axis_offset = (layout->button_count + 7) / 8;
+    uint8_t btn_bytes = (layout->button_count + 7) / 8;
+    uint8_t hat_bytes = (layout->hat_count + 1) / 2; /* 4 bits each, rounded up */
+    report->hat_offset = btn_bytes;
+    report->axis_offset = btn_bytes + hat_bytes;
+    report->size = report->axis_offset + (uint16_t) layout->axis_count * 2;
+
+    /* Initialize hats to null/centered (count value = outside logical range) */
+    for (uint8_t i = 0; i < layout->hat_count; i++) {
+        uint8_t null_val = layout->hats[i].count;
+        uint8_t byte_idx = report->hat_offset + i / 2;
+        if (i % 2 == 0)
+            report->data[byte_idx] = (report->data[byte_idx] & 0xF0) | (null_val & 0x0F);
+        else
+            report->data[byte_idx] = (report->data[byte_idx] & 0x0F) | ((null_val & 0x0F) << 4);
+    }
 }
 
 bool hid_gamepad_report_set_button(hid_gamepad_report_buf_t *report,
@@ -182,6 +253,33 @@ bool hid_gamepad_report_set_button(hid_gamepad_report_buf_t *report,
         report->data[byte_idx] |= (1u << bit_idx);
     else if (raw_value <= report->layout->buttons[index].off)
         report->data[byte_idx] &= ~(1u << bit_idx);
+    return true;
+}
+
+bool hid_gamepad_report_set_hat(hid_gamepad_report_buf_t *report,
+                                uint8_t hat_index, int32_t raw_value) {
+    if (hat_index >= report->layout->hat_count)
+        return false;
+    const hid_gamepad_hat_def_t *hat = &report->layout->hats[hat_index];
+
+    /* Map raw value to HID position: match positions first, then centered, else null */
+    uint8_t hid_val = hat->count; /* null/centered by default */
+    if (raw_value == hat->centered) {
+        /* already null */
+    } else {
+        for (uint8_t i = 0; i < hat->count; i++) {
+            if (raw_value == hat->positions[i]) {
+                hid_val = i;
+                break;
+            }
+        }
+    }
+
+    uint8_t byte_idx = report->hat_offset + hat_index / 2;
+    if (hat_index % 2 == 0)
+        report->data[byte_idx] = (report->data[byte_idx] & 0xF0) | (hid_val & 0x0F);
+    else
+        report->data[byte_idx] = (report->data[byte_idx] & 0x0F) | ((hid_val & 0x0F) << 4);
     return true;
 }
 
@@ -456,8 +554,7 @@ esp_err_t hid_gamepad_init(const hid_gamepad_config_t *config) {
     s_strings[STR_IDX_PRODUCT] = config->product;
     s_strings[STR_IDX_SERIAL] = config->serial;
 
-    uint8_t poll_ms = config->poll_interval_ms > 0 ? config->poll_interval_ms : 1;
-    {
+    uint8_t poll_ms = config->poll_interval_ms > 0 ? config->poll_interval_ms : 1; {
         enum { ITF_NUM_HID = 0, ITF_NUM_TOTAL };
         uint8_t desc[] = {
             TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL, 0,

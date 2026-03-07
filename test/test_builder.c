@@ -157,6 +157,147 @@ void test_builder_scale_axis_signed_range(void)
     TEST_ASSERT_INT16_WITHIN(1, 0, val);
 }
 
+/* ═══════════════════════════════════════════════════════════════════════
+ *  Hat switch tests
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+/* Helper: standard 8-way hat positions (raw values 0–7 = N,NE,E,SE,S,SW,W,NW) */
+static const int32_t hat8_positions[] = {0, 1, 2, 3, 4, 5, 6, 7};
+#define HAT8_CENTERED 8
+
+void test_builder_hat_report_size(void)
+{
+    /* 8 buttons (1 byte) + 1 hat (4 bits, padded to 1 byte) + 2 axes (4 bytes) = 6 */
+    hid_gamepad_layout_t l = {0};
+    for (int i = 0; i < 8; i++)
+        hid_gamepad_layout_add_button(&l, 1, 0);
+    hid_gamepad_layout_add_hat(&l, HAT8_CENTERED, hat8_positions, 8);
+    hid_gamepad_layout_add_axis(&l, 0x30, -32767, 32767);
+    hid_gamepad_layout_add_axis(&l, 0x31, -32767, 32767);
+    hid_gamepad_report_buf_t r;
+    hid_gamepad_report_init(&r, &l);
+    TEST_ASSERT_EQUAL_UINT16(6, r.size);
+}
+
+void test_builder_hat_init_centered(void)
+{
+    /* A single 8-way hat should initialize to count (8) = null/centered */
+    hid_gamepad_layout_t l = {0};
+    hid_gamepad_layout_add_hat(&l, HAT8_CENTERED, hat8_positions, 8);
+    hid_gamepad_report_buf_t r;
+    hid_gamepad_report_init(&r, &l);
+    TEST_ASSERT_EQUAL_HEX8(0x08, r.data[0] & 0x0F);
+}
+
+void test_builder_hat_set_direction(void)
+{
+    hid_gamepad_layout_t l = {0};
+    hid_gamepad_layout_add_hat(&l, HAT8_CENTERED, hat8_positions, 8);
+    hid_gamepad_report_buf_t r;
+    hid_gamepad_report_init(&r, &l);
+
+    /* Set to North (raw 0 → HID position 0) */
+    hid_gamepad_report_set_hat(&r, 0, 0);
+    TEST_ASSERT_EQUAL_HEX8(0x00, r.data[0] & 0x0F);
+
+    /* Set to East (raw 2 → HID position 2) */
+    hid_gamepad_report_set_hat(&r, 0, 2);
+    TEST_ASSERT_EQUAL_HEX8(0x02, r.data[0] & 0x0F);
+
+    /* Set to South (raw 4 → HID position 4) */
+    hid_gamepad_report_set_hat(&r, 0, 4);
+    TEST_ASSERT_EQUAL_HEX8(0x04, r.data[0] & 0x0F);
+
+    /* Set to centered */
+    hid_gamepad_report_set_hat(&r, 0, HAT8_CENTERED);
+    TEST_ASSERT_EQUAL_HEX8(0x08, r.data[0] & 0x0F);
+}
+
+void test_builder_hat_two_hats_packed(void)
+{
+    /* Two hats share one byte (4 bits each, no padding needed) */
+    hid_gamepad_layout_t l = {0};
+    hid_gamepad_layout_add_hat(&l, HAT8_CENTERED, hat8_positions, 8);
+    hid_gamepad_layout_add_hat(&l, HAT8_CENTERED, hat8_positions, 8);
+    hid_gamepad_report_buf_t r;
+    hid_gamepad_report_init(&r, &l);
+    TEST_ASSERT_EQUAL_UINT16(1, r.size); /* 2 hats × 4 bits = 1 byte */
+
+    hid_gamepad_report_set_hat(&r, 0, 3); /* SE in low nibble → HID 3 */
+    hid_gamepad_report_set_hat(&r, 1, 7); /* NW in high nibble → HID 7 */
+    TEST_ASSERT_EQUAL_HEX8(0x73, r.data[0]);
+}
+
+void test_builder_hat_with_buttons_offsets(void)
+{
+    /* 32 buttons (4 bytes) + 1 hat (4 bits + 4 pad = 1 byte) + 1 axis (2 bytes) = 7 */
+    hid_gamepad_layout_t l = {0};
+    for (int i = 0; i < 32; i++)
+        hid_gamepad_layout_add_button(&l, 1, 0);
+    hid_gamepad_layout_add_hat(&l, HAT8_CENTERED, hat8_positions, 8);
+    hid_gamepad_layout_add_axis(&l, 0x30, -32767, 32767);
+    hid_gamepad_report_buf_t r;
+    hid_gamepad_report_init(&r, &l);
+
+    TEST_ASSERT_EQUAL_UINT8(4, r.hat_offset);
+    TEST_ASSERT_EQUAL_UINT8(5, r.axis_offset);
+    TEST_ASSERT_EQUAL_UINT16(7, r.size);
+
+    /* Set hat to S (raw 4 → HID 4) and verify it's in the right byte */
+    hid_gamepad_report_set_hat(&r, 0, 4);
+    TEST_ASSERT_EQUAL_HEX8(0x04, r.data[4] & 0x0F);
+
+    /* Set axis and verify it doesn't clobber hat */
+    hid_gamepad_report_set_axis(&r, 0, 0x1234);
+    TEST_ASSERT_EQUAL_HEX8(0x04, r.data[4] & 0x0F);
+    TEST_ASSERT_EQUAL_HEX8(0x34, r.data[5]);
+    TEST_ASSERT_EQUAL_HEX8(0x12, r.data[6]);
+}
+
+void test_builder_hat_out_of_range_returns_false(void)
+{
+    hid_gamepad_layout_t l = {0};
+    hid_gamepad_layout_add_hat(&l, HAT8_CENTERED, hat8_positions, 8);
+    hid_gamepad_report_buf_t r;
+    hid_gamepad_report_init(&r, &l);
+
+    TEST_ASSERT_TRUE(hid_gamepad_report_set_hat(&r, 0, 3));
+    TEST_ASSERT_FALSE(hid_gamepad_report_set_hat(&r, 1, 0)); /* index 1 doesn't exist */
+}
+
+void test_builder_hat_custom_raw_values(void)
+{
+    /* Hat with non-sequential raw values (e.g. device sends 100,200,300,400 for N,E,S,W) */
+    const int32_t positions[] = {100, 200, 300, 400};
+    hid_gamepad_layout_t l = {0};
+    hid_gamepad_layout_add_hat(&l, -1, positions, 4);
+    hid_gamepad_report_buf_t r;
+    hid_gamepad_report_init(&r, &l);
+
+    /* Centered on init (count=4 → HID null value) */
+    TEST_ASSERT_EQUAL_HEX8(0x04, r.data[0] & 0x0F);
+
+    /* raw 100 → position 0 (N) */
+    hid_gamepad_report_set_hat(&r, 0, 100);
+    TEST_ASSERT_EQUAL_HEX8(0x00, r.data[0] & 0x0F);
+
+    /* raw 300 → position 2 (S) */
+    hid_gamepad_report_set_hat(&r, 0, 300);
+    TEST_ASSERT_EQUAL_HEX8(0x02, r.data[0] & 0x0F);
+
+    /* raw -1 → centered */
+    hid_gamepad_report_set_hat(&r, 0, -1);
+    TEST_ASSERT_EQUAL_HEX8(0x04, r.data[0] & 0x0F);
+
+    /* Unknown raw value → centered (null) */
+    hid_gamepad_report_set_hat(&r, 0, 999);
+    TEST_ASSERT_EQUAL_HEX8(0x04, r.data[0] & 0x0F);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+ *  Scaling tests (non-identity ranges — verify internal conversion)
+ * ═══════════════════════════════════════════════════════════════════════ */
+
 void test_builder_scale_button_threshold(void)
 {
     /* on=2048, off=2047 (midpoint of 0..4095) */
