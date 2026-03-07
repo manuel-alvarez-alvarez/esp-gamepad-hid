@@ -40,6 +40,11 @@ extern void test_builder_hat_with_buttons_offsets(void);
 extern void test_builder_hat_out_of_range_returns_false(void);
 extern void test_builder_hat_custom_raw_values(void);
 
+extern void test_builder_button_returns_true_on_change(void);
+extern void test_builder_button_hysteresis_no_change(void);
+extern void test_builder_hat_returns_true_on_change(void);
+extern void test_builder_axis_returns_true_on_change(void);
+
 extern void test_builder_scale_axis_endpoints(void);
 extern void test_builder_scale_axis_midpoint(void);
 extern void test_builder_scale_axis_signed_range(void);
@@ -79,6 +84,12 @@ int main(int argc, char *argv[])
     RUN_FILTERED_TEST(test_builder_hat_with_buttons_offsets);
     RUN_FILTERED_TEST(test_builder_hat_out_of_range_returns_false);
     RUN_FILTERED_TEST(test_builder_hat_custom_raw_values);
+
+    /* Builder: changed-value returns */
+    RUN_FILTERED_TEST(test_builder_button_returns_true_on_change);
+    RUN_FILTERED_TEST(test_builder_button_hysteresis_no_change);
+    RUN_FILTERED_TEST(test_builder_hat_returns_true_on_change);
+    RUN_FILTERED_TEST(test_builder_axis_returns_true_on_change);
 
     /* Builder: scaling */
     RUN_FILTERED_TEST(test_builder_scale_axis_endpoints);
