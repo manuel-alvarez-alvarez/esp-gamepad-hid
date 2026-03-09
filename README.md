@@ -10,7 +10,7 @@ Runtime-configurable USB HID gamepad component for [ESP-IDF](https://docs.espres
 - Automatic HID report descriptor generation with proper byte-aligned padding
 - Per-button hysteresis thresholds (on/off) for noise-free input
 - Hat switches with raw device value mapping (positions[0]=N, clockwise) and null/centered state
-- 16-bit signed axes with configurable input range scaled to [-32767, 32767]
+- 16-bit signed axes with configurable input range scaled (and clamped) to [-32767, 32767]
 - Configurable USB polling rate (default 1000 Hz)
 - VID/PID from config or auto-derived from manufacturer/product strings via FNV-1a hash
 - Async SOF-based report sending for minimal latency
@@ -44,6 +44,8 @@ void app_main(void) {
     hid_gamepad_layout_add_button(&layout, 1, 0);
     static const int32_t hat_pos[] = {0, 1, 2, 3, 4, 5, 6, 7}; /* N, NE, E, SE, S, SW, W, NW */
     hid_gamepad_layout_add_hat(&layout, /*centered=*/8, hat_pos, 8);
+    static const int32_t profile_switch[] = {0, 100, 200};    /* 3-position selector */
+    hid_gamepad_layout_add_switch(&layout, profile_switch, 3);
     hid_gamepad_layout_add_axis(&layout, HID_USAGE_DESKTOP_X, -1000, 1000);
     hid_gamepad_layout_add_axis(&layout, HID_USAGE_DESKTOP_Y, -1000, 1000);
 
@@ -59,6 +61,7 @@ void app_main(void) {
         hid_gamepad_report_set_button(&report, 0, my_read_btn0());
         hid_gamepad_report_set_button(&report, 1, my_read_btn1());
         hid_gamepad_report_set_hat(&report, 0, my_read_dpad());
+        hid_gamepad_report_set_switch(&report, 0, my_read_profile());
         hid_gamepad_report_set_axis(&report, 0, my_read_x());
         hid_gamepad_report_set_axis(&report, 1, my_read_y());
         hid_gamepad_send_report(&report);
@@ -92,10 +95,13 @@ Fields set to `0` (or `-1` for `task_core`) use their defaults.
 
 ### Layout Builder
 
+All builder helpers now return `true` on success and `false` when the layout is already full or the parameters are invalid (e.g., zero hat positions or an axis whose min/max are equal). Invalid inputs are rejected up front instead of producing malformed HID descriptors later.
+
 | Function | Description |
 |---|---|
 | `hid_gamepad_layout_add_button(layout, on, off)` | Add a button with hysteresis thresholds (raw >= `on` → pressed, raw <= `off` → released) |
 | `hid_gamepad_layout_add_hat(layout, centered, positions, count)` | Add a hat switch with raw values for each direction (`positions[0]`=N, clockwise) and a centered/null value |
+| `hid_gamepad_layout_add_switch(layout, values, count)` | Add an n-way switch whose raw values map onto HID buttons |
 | `hid_gamepad_layout_add_axis(layout, usage, in_min, in_max)` | Add a 16-bit signed axis with HID usage ID and device raw range |
 
 ### Functions
@@ -109,12 +115,14 @@ Fields set to `0` (or `-1` for `task_core`) use their defaults.
 
 ### Report Buffer
 
+Axis setters clamp raw inputs into the declared `[in_min, in_max]` range before conversion so devices that overshoot never corrupt the HID stream. Setters are void; they update the report buffer in-place and ignore out-of-range indices.
+
 | Function | Description |
 |---|---|
 | `hid_gamepad_report_init(report, layout)` | Initialize a report buffer for the given layout |
-| `hid_gamepad_report_set_button(report, index, raw_value)` | Set a button state from a raw device value; returns `true` if the report changed |
-| `hid_gamepad_report_set_hat(report, hat_index, raw_value)` | Set a hat switch from a raw device value (mapped automatically); returns `true` if the report changed |
-| `hid_gamepad_report_set_axis(report, axis_index, raw_value)` | Set an axis value from a raw device value (scaled automatically); returns `true` if the report changed |
+| `hid_gamepad_report_set_button(report, index, raw_value)` | Set a button state from a raw device value |
+| `hid_gamepad_report_set_hat(report, hat_index, raw_value)` | Set a hat switch from a raw device value (mapped automatically) |
+| `hid_gamepad_report_set_axis(report, axis_index, raw_value)` | Set an axis value from a raw device value (scaled automatically) |
 
 ## Testing
 
