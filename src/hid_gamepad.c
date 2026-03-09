@@ -10,6 +10,7 @@
 #define HID_AXIS_MIN  (-32767)
 #define HID_AXIS_MAX  ( 32767)
 #define HID_AXIS_RANGE (HID_AXIS_MAX - HID_AXIS_MIN) /* 65534 */
+#define HID_AXIS_SCALE_SHIFT 16
 
 /* Descriptor section sizes (bytes) */
 #define DESC_HEADER_SIZE    6   /* Usage Page + Usage + Collection */
@@ -44,8 +45,42 @@ static uint16_t fnv1a_16(const char *str) {
     return (uint16_t) ((h >> 16) ^ (h & 0xFFFF));
 }
 
-static int16_t scale_axis(int32_t val, int32_t in_min, int32_t in_max) {
-    return (int16_t) (((int64_t) (val - in_min) * HID_AXIS_RANGE) / (in_max - in_min) + HID_AXIS_MIN);
+static bool axis_compute_scale(hid_gamepad_axis_def_t *axis) {
+    if (!axis) {
+        return false;
+    }
+    int64_t range = (int64_t) axis->in_max - axis->in_min;
+    if (range <= 0) {
+        axis->scale_mult = 0;
+        return false;
+    }
+    axis->scale_mult = (uint32_t) (((uint64_t) HID_AXIS_RANGE << HID_AXIS_SCALE_SHIFT) / (uint64_t) range);
+    return axis->scale_mult != 0;
+}
+
+static int16_t scale_axis(const hid_gamepad_axis_def_t *axis, int32_t val) {
+    int32_t clamped = val;
+    if (clamped < axis->in_min)
+        clamped = axis->in_min;
+    else if (clamped > axis->in_max)
+        clamped = axis->in_max;
+
+    if (clamped <= axis->in_min)
+        return HID_AXIS_MIN;
+    if (clamped >= axis->in_max)
+        return HID_AXIS_MAX;
+
+    if (axis->scale_mult != 0) {
+        int32_t delta = clamped - axis->in_min;
+        int32_t scaled = (int32_t) (((int64_t) delta * (int64_t) axis->scale_mult) >> HID_AXIS_SCALE_SHIFT);
+        return (int16_t) (scaled + HID_AXIS_MIN);
+    }
+
+    int32_t range = axis->in_max - axis->in_min;
+    if (range <= 0) {
+        return HID_AXIS_MIN;
+    }
+    return (int16_t) (((int64_t) (clamped - axis->in_min) * HID_AXIS_RANGE) / range + HID_AXIS_MIN);
 }
 
 static uint8_t total_button_count(const hid_gamepad_layout_t *layout) {
@@ -197,45 +232,67 @@ static size_t hid_gamepad_desc_build(const hid_gamepad_layout_t *layout,
  *  Layout
  * ═══════════════════════════════════════════════════════════════════════ */
 
-void hid_gamepad_layout_add_button(hid_gamepad_layout_t *layout,
+bool hid_gamepad_layout_add_button(hid_gamepad_layout_t *layout,
                                    int32_t on, int32_t off) {
-    if (layout->button_count < HID_GAMEPAD_MAX_BUTTONS) {
-        layout->buttons[layout->button_count].on = on;
-        layout->buttons[layout->button_count].off = off;
-        layout->button_count++;
+    if (!layout || layout->button_count >= HID_GAMEPAD_MAX_BUTTONS) {
+        return false;
     }
+    layout->buttons[layout->button_count].on = on;
+    layout->buttons[layout->button_count].off = off;
+    layout->button_count++;
+    return true;
 }
 
-void hid_gamepad_layout_add_hat(hid_gamepad_layout_t *layout,
+bool hid_gamepad_layout_add_hat(hid_gamepad_layout_t *layout,
                                 int32_t centered,
                                 const int32_t *positions, uint8_t count) {
-    if (layout->hat_count < HID_GAMEPAD_MAX_HATS && count <= HID_GAMEPAD_MAX_HAT_POSITIONS) {
-        hid_gamepad_hat_def_t *hat = &layout->hats[layout->hat_count];
-        hat->count = count;
-        hat->centered = centered;
-        memcpy(hat->positions, positions, count * sizeof(int32_t));
-        layout->hat_count++;
-    }
+    if (!layout || !positions)
+        return false;
+    if (count == 0 || count > HID_GAMEPAD_MAX_HAT_POSITIONS)
+        return false;
+    if (layout->hat_count >= HID_GAMEPAD_MAX_HATS)
+        return false;
+
+    hid_gamepad_hat_def_t *hat = &layout->hats[layout->hat_count];
+    hat->count = count;
+    hat->centered = centered;
+    memcpy(hat->positions, positions, count * sizeof(int32_t));
+    layout->hat_count++;
+    return true;
 }
 
-void hid_gamepad_layout_add_switch(hid_gamepad_layout_t *layout,
-                                    const int32_t *values, uint8_t count) {
-    if (layout->switch_count < HID_GAMEPAD_MAX_SWITCHES && count <= HID_GAMEPAD_MAX_SWITCH_POSITIONS) {
-        hid_gamepad_switch_def_t *sw = &layout->switches[layout->switch_count];
-        sw->count = count;
-        memcpy(sw->values, values, count * sizeof(int32_t));
-        layout->switch_count++;
-    }
+bool hid_gamepad_layout_add_switch(hid_gamepad_layout_t *layout,
+                                   const int32_t *values, uint8_t count) {
+    if (!layout || !values)
+        return false;
+    if (count == 0 || count > HID_GAMEPAD_MAX_SWITCH_POSITIONS)
+        return false;
+    if (layout->switch_count >= HID_GAMEPAD_MAX_SWITCHES)
+        return false;
+
+    hid_gamepad_switch_def_t *sw = &layout->switches[layout->switch_count];
+    sw->count = count;
+    memcpy(sw->values, values, count * sizeof(int32_t));
+    layout->switch_count++;
+    return true;
 }
 
-void hid_gamepad_layout_add_axis(hid_gamepad_layout_t *layout,
+bool hid_gamepad_layout_add_axis(hid_gamepad_layout_t *layout,
                                  uint8_t usage, int32_t in_min, int32_t in_max) {
-    if (layout->axis_count < HID_GAMEPAD_MAX_AXES) {
-        layout->axes[layout->axis_count].usage = usage;
-        layout->axes[layout->axis_count].in_min = in_min;
-        layout->axes[layout->axis_count].in_max = in_max;
-        layout->axis_count++;
-    }
+    if (!layout)
+        return false;
+    if (layout->axis_count >= HID_GAMEPAD_MAX_AXES)
+        return false;
+    if (in_max <= in_min)
+        return false;
+
+    hid_gamepad_axis_def_t *axis = &layout->axes[layout->axis_count];
+    axis->usage = usage;
+    axis->in_min = in_min;
+    axis->in_max = in_max;
+    axis_compute_scale(axis);
+    layout->axis_count++;
+    return true;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -250,6 +307,12 @@ void hid_gamepad_report_init(hid_gamepad_report_buf_t *report, hid_gamepad_layou
     report->hat_offset = btn_bytes;
     report->axis_offset = btn_bytes + hat_bytes;
     report->size = report->axis_offset + (uint16_t) layout->axis_count * 2;
+
+    for (uint8_t i = 0; i < layout->axis_count; i++) {
+        if (layout->axes[i].scale_mult == 0) {
+            axis_compute_scale(&layout->axes[i]);
+        }
+    }
 
     /* Initialize hats to null/centered (count value = outside logical range) */
     for (uint8_t i = 0; i < layout->hat_count; i++) {
@@ -336,9 +399,8 @@ void hid_gamepad_report_set_axis(hid_gamepad_report_buf_t *report,
                                  uint8_t axis_index, int32_t raw_value) {
     if (axis_index >= report->layout->axis_count)
         return;
-    int16_t scaled = scale_axis(raw_value,
-                                report->layout->axes[axis_index].in_min,
-                                report->layout->axes[axis_index].in_max);
+    const hid_gamepad_axis_def_t *axis = &report->layout->axes[axis_index];
+    int16_t scaled = scale_axis(axis, raw_value);
     uint8_t off = report->axis_offset + axis_index * 2;
     report->data[off] = (uint8_t) (scaled & 0xFF);
     report->data[off + 1] = (uint8_t) ((uint16_t) scaled >> 8);

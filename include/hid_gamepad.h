@@ -33,6 +33,7 @@ typedef struct {
     uint8_t usage; /* HID usage ID (e.g. HID_USAGE_DESKTOP_X) */
     int32_t in_min; /* device raw minimum */
     int32_t in_max; /* device raw maximum */
+    uint32_t scale_mult; /* Q16 multiplier used for scaling without divides */
 } hid_gamepad_axis_def_t;
 
 typedef struct {
@@ -60,20 +61,20 @@ typedef struct {
 /* ── Layout construction ───────────────────────────────────────────── */
 
 /** Add a button with per-button on/off thresholds (raw >= on → pressed, raw <= off → released). */
-void hid_gamepad_layout_add_button(hid_gamepad_layout_t *layout,
+bool hid_gamepad_layout_add_button(hid_gamepad_layout_t *layout,
                                    int32_t on, int32_t off);
 
 /** Add a hat switch. positions[0]=N, [1]=NE, … clockwise. centered = raw value for null state. */
-void hid_gamepad_layout_add_hat(hid_gamepad_layout_t *layout,
+bool hid_gamepad_layout_add_hat(hid_gamepad_layout_t *layout,
                                 int32_t centered,
                                 const int32_t *positions, uint8_t count);
 
 /** Add a switch. values[0]=no button, values[1..count-1]=button N. Maps to HID buttons. */
-void hid_gamepad_layout_add_switch(hid_gamepad_layout_t *layout,
-                                    const int32_t *values, uint8_t count);
+bool hid_gamepad_layout_add_switch(hid_gamepad_layout_t *layout,
+                                   const int32_t *values, uint8_t count);
 
 /** Add a 16-bit signed axis with device raw range [in_min, in_max] scaled to [-32767, 32767]. */
-void hid_gamepad_layout_add_axis(hid_gamepad_layout_t *layout,
+bool hid_gamepad_layout_add_axis(hid_gamepad_layout_t *layout,
                                  uint8_t usage, int32_t in_min, int32_t in_max);
 
 /* ── Report buffer ─────────────────────────────────────────────────── */

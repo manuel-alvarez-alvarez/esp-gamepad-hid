@@ -39,6 +39,8 @@ extern void test_builder_hat_two_hats_packed(void);
 extern void test_builder_hat_with_buttons_offsets(void);
 extern void test_builder_hat_out_of_range_is_noop(void);
 extern void test_builder_hat_custom_raw_values(void);
+extern void test_builder_hat_rejects_zero_count(void);
+extern void test_builder_hat_rejects_excess_positions(void);
 
 extern void test_builder_button_hysteresis(void);
 
@@ -46,6 +48,8 @@ extern void test_builder_scale_axis_endpoints(void);
 extern void test_builder_scale_axis_midpoint(void);
 extern void test_builder_scale_axis_signed_range(void);
 extern void test_builder_scale_button_threshold(void);
+extern void test_builder_axis_rejects_invalid_range(void);
+extern void test_builder_axis_clamps_inputs(void);
 
 /* Switch tests */
 extern void test_builder_switch_adds_buttons(void);
@@ -54,6 +58,7 @@ extern void test_builder_switch_no_match_clears_all(void);
 extern void test_builder_switch_with_buttons_offsets(void);
 extern void test_builder_switch_out_of_range_is_noop(void);
 extern void test_builder_two_switches(void);
+extern void test_builder_switch_rejects_zero_count(void);
 
 int main(int argc, char *argv[])
 {
@@ -89,6 +94,8 @@ int main(int argc, char *argv[])
     RUN_FILTERED_TEST(test_builder_hat_with_buttons_offsets);
     RUN_FILTERED_TEST(test_builder_hat_out_of_range_is_noop);
     RUN_FILTERED_TEST(test_builder_hat_custom_raw_values);
+    RUN_FILTERED_TEST(test_builder_hat_rejects_zero_count);
+    RUN_FILTERED_TEST(test_builder_hat_rejects_excess_positions);
 
     /* Builder: hysteresis */
     RUN_FILTERED_TEST(test_builder_button_hysteresis);
@@ -98,6 +105,8 @@ int main(int argc, char *argv[])
     RUN_FILTERED_TEST(test_builder_scale_axis_midpoint);
     RUN_FILTERED_TEST(test_builder_scale_axis_signed_range);
     RUN_FILTERED_TEST(test_builder_scale_button_threshold);
+    RUN_FILTERED_TEST(test_builder_axis_rejects_invalid_range);
+    RUN_FILTERED_TEST(test_builder_axis_clamps_inputs);
 
     /* Builder: switches */
     RUN_FILTERED_TEST(test_builder_switch_adds_buttons);
@@ -106,6 +115,7 @@ int main(int argc, char *argv[])
     RUN_FILTERED_TEST(test_builder_switch_with_buttons_offsets);
     RUN_FILTERED_TEST(test_builder_switch_out_of_range_is_noop);
     RUN_FILTERED_TEST(test_builder_two_switches);
+    RUN_FILTERED_TEST(test_builder_switch_rejects_zero_count);
 
     return UNITY_END();
 }

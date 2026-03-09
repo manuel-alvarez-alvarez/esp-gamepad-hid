@@ -297,6 +297,22 @@ void test_builder_hat_custom_raw_values(void)
     TEST_ASSERT_EQUAL_HEX8(0x04, r.data[0] & 0x0F);
 }
 
+void test_builder_hat_rejects_zero_count(void)
+{
+    hid_gamepad_layout_t l = {0};
+    TEST_ASSERT_FALSE(hid_gamepad_layout_add_hat(&l, 0, hat8_positions, 0));
+    TEST_ASSERT_EQUAL_UINT8(0, l.hat_count);
+}
+
+void test_builder_hat_rejects_excess_positions(void)
+{
+    hid_gamepad_layout_t l = {0};
+    int32_t positions[HID_GAMEPAD_MAX_HAT_POSITIONS + 1] = {0};
+    TEST_ASSERT_FALSE(
+        hid_gamepad_layout_add_hat(&l, 0, positions, HID_GAMEPAD_MAX_HAT_POSITIONS + 1));
+    TEST_ASSERT_EQUAL_UINT8(0, l.hat_count);
+}
+
 void test_builder_button_hysteresis(void)
 {
     /* on=100, off=50: values in the dead zone (51–99) don't change state */
@@ -398,6 +414,13 @@ void test_builder_switch_no_match_clears_all(void)
     TEST_ASSERT_EQUAL_HEX8(0x00, r.data[0]);
 }
 
+void test_builder_switch_rejects_zero_count(void)
+{
+    hid_gamepad_layout_t l = {0};
+    TEST_ASSERT_FALSE(hid_gamepad_layout_add_switch(&l, sw4_values, 0));
+    TEST_ASSERT_EQUAL_UINT8(0, l.switch_count);
+}
+
 void test_builder_switch_with_buttons_offsets(void)
 {
     /* 8 explicit buttons (1 byte) + switch with 4 positions (3 buttons) + 1 axis */
@@ -464,4 +487,29 @@ void test_builder_two_switches(void)
     /* Switch A off → only switch B remains */
     hid_gamepad_report_set_switch(&r, 0, 0);
     TEST_ASSERT_EQUAL_HEX8(0x08, r.data[0]);
+}
+
+void test_builder_axis_rejects_invalid_range(void)
+{
+    hid_gamepad_layout_t l = {0};
+    TEST_ASSERT_FALSE(hid_gamepad_layout_add_axis(&l, 0x30, 100, 100));
+    TEST_ASSERT_EQUAL_UINT8(0, l.axis_count);
+    TEST_ASSERT_FALSE(hid_gamepad_layout_add_axis(&l, 0x30, 10, -10));
+    TEST_ASSERT_EQUAL_UINT8(0, l.axis_count);
+}
+
+void test_builder_axis_clamps_inputs(void)
+{
+    hid_gamepad_layout_t l = {0};
+    TEST_ASSERT_TRUE(hid_gamepad_layout_add_axis(&l, 0x30, -100, 100));
+    hid_gamepad_report_buf_t r;
+    hid_gamepad_report_init(&r, &l);
+
+    hid_gamepad_report_set_axis(&r, 0, 500);
+    int16_t val = (int16_t)(r.data[0] | (r.data[1] << 8));
+    TEST_ASSERT_EQUAL_INT16(32767, val);
+
+    hid_gamepad_report_set_axis(&r, 0, -500);
+    val = (int16_t)(r.data[0] | (r.data[1] << 8));
+    TEST_ASSERT_EQUAL_INT16(-32767, val);
 }
