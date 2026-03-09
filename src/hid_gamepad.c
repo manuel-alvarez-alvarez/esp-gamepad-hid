@@ -499,7 +499,6 @@ void tud_hid_report_failed_cb(uint8_t instance, hid_report_type_t report_type, u
     (void) instance;
     (void) report;
     (void) xferred_bytes;
-    s_report_pending = true;
     try_send_report();
 }
 
