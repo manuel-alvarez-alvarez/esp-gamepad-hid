@@ -89,7 +89,8 @@ typedef struct {
     uint8_t data[HID_GAMEPAD_MAX_REPORT_LENGTH];
 } hid_gamepad_report_buf_t;
 
-void hid_gamepad_report_init(hid_gamepad_report_buf_t *report, hid_gamepad_layout_t *layout);
+/** Callback invoked by the library each USB frame. Update report values here. */
+typedef void (*hid_gamepad_report_cb_t)(hid_gamepad_report_buf_t *report, void *user_ctx);
 
 /* ── Field setters (take raw device values) ────────────────────────── */
 
@@ -119,6 +120,8 @@ typedef struct {
     const char *product; /* Product string      (default: "HID Gamepad") */
     const char *serial; /* Serial string       (default: "000000") */
     const hid_gamepad_layout_t *layout; /* Required: HID report layout */
+    hid_gamepad_report_cb_t report_cb; /* Required: called each USB frame to update the report */
+    void *report_cb_ctx; /* Optional: user context passed to report_cb */
     int task_priority; /* 0 = default (5) */
     int task_core; /* -1 = no affinity */
     size_t task_stack_size; /* 0 = default (4096) */
@@ -132,6 +135,8 @@ typedef struct {
     .product                = "HID Gamepad",                \
     .serial                 = "000000",                     \
     .layout                 = NULL,                         \
+    .report_cb              = NULL,                         \
+    .report_cb_ctx          = NULL,                         \
     .task_priority          = 0,                            \
     .task_core              = -1,                           \
     .task_stack_size        = 0,                            \
@@ -143,10 +148,6 @@ esp_err_t hid_gamepad_init(const hid_gamepad_config_t *config);
 esp_err_t hid_gamepad_update(const hid_gamepad_config_t *config);
 
 esp_err_t hid_gamepad_deinit(void);
-
-bool hid_gamepad_is_mounted(void);
-
-esp_err_t hid_gamepad_send_report(hid_gamepad_report_buf_t *report);
 
 #endif /* ESP_PLATFORM */
 

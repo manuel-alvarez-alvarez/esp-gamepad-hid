@@ -465,30 +465,33 @@ static TaskHandle_t s_task;
 static TaskHandle_t s_joiner;
 static volatile bool s_mounted;
 static volatile bool s_running;
-static volatile bool s_report;
 static volatile bool s_busy;
+static volatile bool s_report;
 static bool s_initialized;
 static uint16_t s_report_size;
 static uint8_t s_report_data[HID_GAMEPAD_MAX_REPORT_LENGTH];
+static hid_gamepad_layout_t s_layout;
+static hid_gamepad_report_buf_t s_report_buf;
+static hid_gamepad_report_cb_t s_report_cb;
+static void *s_report_cb_ctx;
 
 /* ── TinyUSB device task ──────────────────────────────────────────── */
 
-static esp_err_t try_send_report(void) {
+static void try_send_report(void) {
+    if (!s_mounted || !s_report || s_busy) {
+        return;
+    }
+    s_report_cb(&s_report_buf, s_report_cb_ctx);
+    s_report_size = s_report_buf.size;
+    memcpy(s_report_data, s_report_buf.data, s_report_buf.size);
     if (s_report_size == 0) {
-        return ESP_OK;
+        s_report = false;
+        return;
     }
-    if (!s_mounted) {
-        return ESP_ERR_INVALID_STATE;
+    if (tud_hid_report(0, s_report_data, s_report_size)) {
+        s_report = false;
+        s_busy = true;
     }
-    if (!s_report || s_busy) {
-        return ESP_ERR_TIMEOUT;
-    }
-    if (!tud_hid_report(0, s_report_data, s_report_size)) {
-        return ESP_FAIL;
-    }
-    s_report = false;
-    s_busy = true;
-    return ESP_OK;
 }
 
 static void usb_device_task(void *arg) {
@@ -675,6 +678,10 @@ esp_err_t hid_gamepad_init(const hid_gamepad_config_t *config) {
         ESP_LOGE(TAG, "layout must be provided");
         return ESP_ERR_INVALID_ARG;
     }
+    if (!config->report_cb) {
+        ESP_LOGE(TAG, "report_cb must be provided");
+        return ESP_ERR_INVALID_ARG;
+    }
     if (s_initialized) {
         ESP_LOGE(TAG, "already initialized");
         return ESP_ERR_INVALID_STATE;
@@ -682,6 +689,12 @@ esp_err_t hid_gamepad_init(const hid_gamepad_config_t *config) {
 
     /* 1. Build descriptors */
     build_descriptors(config);
+
+    /* 1b. Deep-copy the layout so callers don't need to keep it alive */
+    s_layout = *config->layout;
+    hid_gamepad_report_init(&s_report_buf, &s_layout);
+    s_report_cb = config->report_cb;
+    s_report_cb_ctx = config->report_cb_ctx;
 
     /* 2. USB PHY — must be done before tusb_init() on ESP32-S2/S3 */
     const usb_phy_config_t phy_conf = {
@@ -749,6 +762,9 @@ esp_err_t hid_gamepad_deinit(void) {
     s_report_size = 0;
     s_report = false;
     s_busy = false;
+    s_report_cb = NULL;
+    s_report_cb_ctx = NULL;
+    memset(&s_layout, 0, sizeof(s_layout));
 
     ESP_LOGI(TAG, "deinitialized");
     return ESP_OK;
@@ -773,28 +789,16 @@ esp_err_t hid_gamepad_update(const hid_gamepad_config_t *config) {
     s_busy = false;
     s_report_size = 0;
     build_descriptors(config);
+    s_layout = *config->layout;
+    hid_gamepad_report_init(&s_report_buf, &s_layout);
+    s_report_cb = config->report_cb;
+    s_report_cb_ctx = config->report_cb_ctx;
 
     vTaskDelay(pdMS_TO_TICKS(150));
     tud_connect();
 
     ESP_LOGI(TAG, "updated (VID=%04X PID=%04X desc=%u bytes)",
              s_device_desc.idVendor, s_device_desc.idProduct, s_report_desc_size);
-    return ESP_OK;
-}
-
-bool hid_gamepad_is_mounted(void) {
-    return s_mounted;
-}
-
-esp_err_t hid_gamepad_send_report(hid_gamepad_report_buf_t *report) {
-    if (!report) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    if (!s_initialized || !s_mounted) {
-        return ESP_ERR_INVALID_STATE;
-    }
-    s_report_size = report->size;
-    memcpy(s_report_data, report->data, report->size);
     return ESP_OK;
 }
 

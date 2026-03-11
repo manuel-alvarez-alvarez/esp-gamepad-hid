@@ -17,6 +17,9 @@
 #include <stddef.h>
 #include "hid_gamepad.h"
 
+/* Not part of the public API — exposed here for testing only */
+void hid_gamepad_report_init(hid_gamepad_report_buf_t *report, hid_gamepad_layout_t *layout);
+
 /* Wire-format packed struct — must match the descriptor byte-for-byte */
 typedef struct __attribute__((packed)) {
     uint32_t buttons;
