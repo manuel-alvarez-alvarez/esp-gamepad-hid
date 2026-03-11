@@ -25,25 +25,29 @@ static const char *TAG = "example";
 #define SLIDER_MAX 100
 
 #define HAT_CENTERED 100
-#define HAT_N 200
-#define HAT_NE 300
-#define HAT_E 400
-#define HAT_SE 500
-#define HAT_S 600
-#define HAT_SW 700
-#define HAT_W 800
-#define HAT_NW 900
+#define HAT_N   200
+#define HAT_NE  300
+#define HAT_E   400
+#define HAT_SE  500
+#define HAT_S   600
+#define HAT_SW  700
+#define HAT_W   800
+#define HAT_NW  900
+
+#define SWITCH_OFF  0
+#define SWITCH_1    1
+#define SWITCH_2    2
 
 static const int32_t hat_positions[] = {HAT_N, HAT_NE, HAT_E, HAT_SE, HAT_S, HAT_SW, HAT_W, HAT_NW};
-static const int32_t profile_switch[] = {0, 100, 200};    /* 3-position selector */
+static const int32_t profile_switch[] = {SWITCH_OFF, SWITCH_1, SWITCH_2};    /* 3-position selector */
 
-/* ── Report callback ───────────────────────────────────────────────── */
+/* ── Demo animation ────────────────────────────────────────────────── */
 
 #define REVOLUTION_MS  1000    /* one full revolution takes 1 second */
 #define BUTTON_TOGGLE_MS 50   /* buttons toggle every 50 ms */
 
-static void report_cb(hid_gamepad_report_buf_t *report, void *ctx) {
-    (void) ctx;
+static void demo_timer_cb(void *arg) {
+    (void) arg;
 
     /* Use real elapsed time so animation speed is independent of call rate */
     int64_t t_us = esp_timer_get_time();
@@ -52,13 +56,13 @@ static void report_cb(hid_gamepad_report_buf_t *report, void *ctx) {
     int t_ms = (int)(t_us / 1000);
 
     /* Move X and Y axes in a circle */
-    hid_gamepad_report_set_axis(report, 0, (int)(sinf(rad) * AXIS_MAX));
-    hid_gamepad_report_set_axis(report, 1, (int)(cosf(rad) * AXIS_MAX));
+    hid_gamepad_set(HID_GAMEPAD_AXIS,0, (int)(sinf(rad) * AXIS_MAX));
+    hid_gamepad_set(HID_GAMEPAD_AXIS,1, (int)(cosf(rad) * AXIS_MAX));
 
     /* Dial ramps 0→100 over one revolution */
     int dial = (t_ms % REVOLUTION_MS) * DIAL_MAX / REVOLUTION_MS;
-    hid_gamepad_report_set_axis(report, 2, dial);
-    hid_gamepad_report_set_axis(report, 3, dial);
+    hid_gamepad_set(HID_GAMEPAD_AXIS,2, dial);
+    hid_gamepad_set(HID_GAMEPAD_AXIS,3, dial);
 
     /* Hat follows the stick rotation: divide circle into 8 sectors.
      * Offset by 4 because Y=cos(0)=+1 is South in gamepad coords (+Y=down),
@@ -66,16 +70,16 @@ static void report_cb(hid_gamepad_report_buf_t *report, void *ctx) {
     int sector = ((int)roundf(rad / (2.0f * 3.14159265f) * 8.0f)) % 8;
     if (sector < 0) sector += 8;
     int hat_idx = (12 - sector) % 8;
-    hid_gamepad_report_set_hat(report, 0, hat_positions[hat_idx]);
+    hid_gamepad_set(HID_GAMEPAD_HAT,0, hat_positions[hat_idx]);
 
     /* Alternate buttons every BUTTON_TOGGLE_MS */
     int btn_phase = (t_ms / BUTTON_TOGGLE_MS) % 2;
-    hid_gamepad_report_set_button(report, 0, btn_phase);
-    hid_gamepad_report_set_button(report, 1, 1 - btn_phase);
+    hid_gamepad_set(HID_GAMEPAD_BUTTON,0, btn_phase);
+    hid_gamepad_set(HID_GAMEPAD_BUTTON,1, 1 - btn_phase);
 
     /* Cycle switch positions every revolution */
     int switch_idx = (t_ms / REVOLUTION_MS) % 3;
-    hid_gamepad_report_set_switch(report, 0, profile_switch[switch_idx]);
+    hid_gamepad_set(HID_GAMEPAD_SWITCH,0, profile_switch[switch_idx]);
 }
 
 /* ── Application ───────────────────────────────────────────────────── */
@@ -96,10 +100,18 @@ void app_main(void) {
     cfg.task_core = 1;
     cfg.task_priority = configMAX_PRIORITIES - 1;
     cfg.layout = &layout;
-    cfg.report_cb = report_cb;
     cfg.poll_interval_ms = POLL_MS;
 
     ESP_ERROR_CHECK(hid_gamepad_init(&cfg));
 
-    ESP_LOGI(TAG, "HID gamepad initialized — reports are sent via callback");
+    /* Update report values from a periodic timer */
+    const esp_timer_create_args_t timer_args = {
+        .callback = demo_timer_cb,
+        .name = "demo",
+    };
+    esp_timer_handle_t timer;
+    ESP_ERROR_CHECK(esp_timer_create(&timer_args, &timer));
+    ESP_ERROR_CHECK(esp_timer_start_periodic(timer, 1000)); /* 1 ms */
+
+    ESP_LOGI(TAG, "HID gamepad initialized — demo animation running");
 }

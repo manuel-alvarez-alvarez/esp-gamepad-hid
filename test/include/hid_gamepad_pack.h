@@ -13,20 +13,24 @@
  *   [14..15] ry       int16_t   — right trigger
  */
 
+#include <stdbool.h>
 #include <stdint.h>
-#include <stddef.h>
 #include "hid_gamepad.h"
 
-/* Not part of the public API — exposed here for testing only */
-void hid_gamepad_report_init(hid_gamepad_report_buf_t *report, hid_gamepad_layout_t *layout);
+/** Initialize the report based on the configured layout **/
+void report_init(hid_gamepad_layout_t *layout, hid_gamepad_report_buf_t *report);
+
+/** Unified field setter using device raw values **/
+bool report_set(hid_gamepad_layout_t *layout, hid_gamepad_report_buf_t *report,
+                hid_gamepad_input_t type, uint8_t index, int32_t raw_value);
 
 /* Wire-format packed struct — must match the descriptor byte-for-byte */
 typedef struct __attribute__((packed)) {
     uint32_t buttons;
-    int16_t  x;
-    int16_t  y;
-    int16_t  z;
-    int16_t  rz;
-    int16_t  rx;
-    int16_t  ry;
+    int16_t x;
+    int16_t y;
+    int16_t z;
+    int16_t rz;
+    int16_t rx;
+    int16_t ry;
 } ref_gamepad_wire_t;

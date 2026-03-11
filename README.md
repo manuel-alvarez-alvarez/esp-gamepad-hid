@@ -6,11 +6,13 @@ Runtime-configurable USB HID gamepad component for [ESP-IDF](https://docs.espres
 
 ## Features
 
-- Dynamic layout builder for buttons (up to 32), hat switches (up to 4), and axes (up to 8)
+- Dynamic layout builder for buttons (up to 32), hat switches (up to 4), selector switches (up to 4), and axes (up to 8)
 - Automatic HID report descriptor generation with proper byte-aligned padding
 - Per-button hysteresis thresholds (on/off) for noise-free input
 - Hat switches with raw device value mapping (positions[0]=N, clockwise) and null/centered state
+- Selector switches that map n-way raw values onto HID buttons
 - 16-bit signed axes with configurable input range scaled (and clamped) to [-32767, 32767]
+- Unified setter API: `hid_gamepad_set(type, index, raw_value)` for all input types
 - Configurable USB polling rate (default 1000 Hz)
 - VID/PID from config or auto-derived from manufacturer/product strings via FNV-1a hash
 - Async SOF-based report sending for minimal latency
@@ -38,16 +40,6 @@ Clone or add this repository as a git submodule under your project's `components
 #include "hid_gamepad.h"
 #include "class/hid/hid.h"
 
-static void my_report_cb(hid_gamepad_report_buf_t *report, void *ctx) {
-    (void) ctx;
-    hid_gamepad_report_set_button(report, 0, my_read_btn0());
-    hid_gamepad_report_set_button(report, 1, my_read_btn1());
-    hid_gamepad_report_set_hat(report, 0, my_read_dpad());
-    hid_gamepad_report_set_switch(report, 0, my_read_profile());
-    hid_gamepad_report_set_axis(report, 0, my_read_x());
-    hid_gamepad_report_set_axis(report, 1, my_read_y());
-}
-
 void app_main(void) {
     hid_gamepad_layout_t layout = {0};
     hid_gamepad_layout_add_button(&layout, 1, 0);
@@ -61,9 +53,15 @@ void app_main(void) {
 
     hid_gamepad_config_t cfg = HID_GAMEPAD_DEFAULT_CONFIG();
     cfg.layout = &layout;
-    cfg.report_cb = my_report_cb;
 
     ESP_ERROR_CHECK(hid_gamepad_init(&cfg));
+
+    /* Update inputs at any time from any task/timer */
+    hid_gamepad_set(HID_GAMEPAD_BUTTON, 0, 1);        /* press button 0 */
+    hid_gamepad_set(HID_GAMEPAD_HAT,    0, hat_pos[2]);/* point East */
+    hid_gamepad_set(HID_GAMEPAD_SWITCH,  0, 100);      /* select position 1 */
+    hid_gamepad_set(HID_GAMEPAD_AXIS,   0, 500);       /* X axis at 50% */
+    hid_gamepad_set(HID_GAMEPAD_AXIS,   1, -1000);     /* Y axis at min */
 }
 ```
 
@@ -83,8 +81,6 @@ Use `HID_GAMEPAD_DEFAULT_CONFIG()` and override only the fields you need.
 | `product` | `const char *` | `"HID Gamepad"` | USB product string |
 | `serial` | `const char *` | `"000000"` | USB serial string |
 | `layout` | `const hid_gamepad_layout_t *` | `NULL` | HID report layout (**required**) |
-| `report_cb` | `hid_gamepad_report_cb_t` | `NULL` | Callback invoked each USB frame to update the report (**required**) |
-| `report_cb_ctx` | `void *` | `NULL` | Optional user context passed to `report_cb` |
 | `task_priority` | `int` | `5` | FreeRTOS task priority |
 | `task_core` | `int` | no affinity | Pin task to core (`-1` = any) |
 | `task_stack_size` | `size_t` | `4096` | Task stack size in bytes |
@@ -110,17 +106,18 @@ All builder helpers now return `true` on success and `false` when the layout is 
 | `hid_gamepad_init(config)` | Initialize the USB HID device; starts TinyUSB and the background task |
 | `hid_gamepad_update(config)` | Rebuild descriptors and force USB re-enumeration with a new configuration |
 | `hid_gamepad_deinit()` | Stop the task and release USB resources |
+| `hid_gamepad_set(type, index, raw_value)` | Set an input value. Returns `ESP_OK` on success, `ESP_ERR_INVALID_ARG` on invalid index/type |
 
-### Report Callback
+Input types for `hid_gamepad_set`:
 
-The `report_cb` callback is invoked each USB frame from the internal USB task. Use the report setters to update the report buffer in-place. Axis setters clamp raw inputs into the declared `[in_min, in_max]` range before conversion so devices that overshoot never corrupt the HID stream. Setters are void; they ignore out-of-range indices.
-
-| Function | Description |
+| Type | Description |
 |---|---|
-| `hid_gamepad_report_set_button(report, index, raw_value)` | Set a button state from a raw device value |
-| `hid_gamepad_report_set_hat(report, hat_index, raw_value)` | Set a hat switch from a raw device value (mapped automatically) |
-| `hid_gamepad_report_set_switch(report, switch_index, raw_value)` | Set a switch position from a raw device value |
-| `hid_gamepad_report_set_axis(report, axis_index, raw_value)` | Set an axis value from a raw device value (scaled automatically) |
+| `HID_GAMEPAD_BUTTON` | Set button state (raw >= `on` threshold → pressed, raw <= `off` → released) |
+| `HID_GAMEPAD_HAT` | Set hat switch direction from a raw value (mapped to the closest position) |
+| `HID_GAMEPAD_SWITCH` | Set a selector switch position from a raw value (maps onto HID buttons) |
+| `HID_GAMEPAD_AXIS` | Set an axis value from a raw value (clamped and scaled to [-32767, 32767]) |
+
+Call `hid_gamepad_set` from any task or timer at any time after `hid_gamepad_init`. The report is sent automatically on each USB frame.
 
 ## Testing
 

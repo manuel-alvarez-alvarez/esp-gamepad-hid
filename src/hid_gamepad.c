@@ -2,6 +2,15 @@
 
 #include <string.h>
 
+#ifdef ESP_PLATFORM
+#include <esp_log.h>
+#include <esp_private/usb_phy.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <tusb.h>
+#include <class/hid/hid_device.h>
+#endif
+
 /* byte helpers */
 #define LO8(v) ((uint8_t)((uint16_t)(v) & 0xFF))
 #define HI8(v) ((uint8_t)(((uint16_t)(v) >> 8) & 0xFF))
@@ -12,6 +21,7 @@
 #define HID_AXIS_RANGE (HID_AXIS_MAX - HID_AXIS_MIN) /* 65534 */
 #define HID_AXIS_SCALE_SHIFT 16
 
+#ifdef ESP_PLATFORM
 /* Descriptor section sizes (bytes) */
 #define DESC_HEADER_SIZE    6   /* Usage Page + Usage + Collection */
 #define DESC_BUTTONS_SIZE  16   /* Button usage page + min/max/size/count + input */
@@ -24,12 +34,57 @@
 #define DESC_AXIS_TAIL_SIZE 12  /* Logical min/max + report size/count + input */
 #define DESC_END_SIZE       1   /* End Collection */
 
+/* Task defaults */
+#define DEFAULT_TASK_PRIORITY 5
+#define DEFAULT_TASK_STACK    4096
+#define DEFAULT_TASK_CORE     tskNO_AFFINITY
+
+#define CONFIG_TOTAL_LEN (TUD_CONFIG_DESC_LEN + TUD_HID_DESC_LEN)
+
+enum {
+    STR_IDX_LANGID = 0,
+    STR_IDX_MANUFACTURER,
+    STR_IDX_PRODUCT,
+    STR_IDX_SERIAL,
+    STR_IDX_COUNT,
+};
+
+enum {
+    ITF_NUM_HID = 0,
+    ITF_NUM_TOTAL,
+};
+
+static const char *TAG = "hid_gamepad";
+
+/* USB descriptor globals (populated during init) */
+static tusb_desc_device_t s_device_desc;
+static uint8_t s_config_desc[CONFIG_TOTAL_LEN];
+static const char *s_strings[STR_IDX_COUNT];
+static uint8_t s_report_desc[128];
+static uint16_t s_report_desc_size = 0;
+#endif /* ESP_PLATFORM */
+
+static hid_gamepad_layout_t s_layout;
+static hid_gamepad_report_buf_t s_report_buf;
+
+#ifdef ESP_PLATFORM
+/* Device state */
+static usb_phy_handle_t s_phy;
+static TaskHandle_t s_task;
+static TaskHandle_t s_joiner;
+static volatile bool s_mounted;
+static volatile bool s_running;
+static volatile bool s_busy;
+static volatile bool s_report;
+static bool s_initialized;
+#endif /* ESP_PLATFORM */
+
 /* ═══════════════════════════════════════════════════════════════════════
  *  Helper functions
  * ═══════════════════════════════════════════════════════════════════════ */
 
-static size_t emit(uint8_t *buf, size_t pos, size_t cap,
-                   const uint8_t *src, size_t len) {
+#ifdef ESP_PLATFORM
+static size_t emit(uint8_t *buf, size_t pos, size_t cap, const uint8_t *src, size_t len) {
     if (buf && pos + len <= cap)
         memcpy(buf + pos, src, len);
     return len;
@@ -44,6 +99,7 @@ static uint16_t fnv1a_16(const char *str) {
     /* XOR-fold 32-bit to 16-bit */
     return (uint16_t) ((h >> 16) ^ (h & 0xFFFF));
 }
+#endif /* ESP_PLATFORM */
 
 static bool axis_compute_scale(hid_gamepad_axis_def_t *axis) {
     if (!axis) {
@@ -59,28 +115,11 @@ static bool axis_compute_scale(hid_gamepad_axis_def_t *axis) {
 }
 
 static int16_t scale_axis(const hid_gamepad_axis_def_t *axis, int32_t val) {
-    int32_t clamped = val;
-    if (clamped < axis->in_min)
-        clamped = axis->in_min;
-    else if (clamped > axis->in_max)
-        clamped = axis->in_max;
-
-    if (clamped <= axis->in_min)
-        return HID_AXIS_MIN;
-    if (clamped >= axis->in_max)
-        return HID_AXIS_MAX;
-
-    if (axis->scale_mult != 0) {
-        int32_t delta = clamped - axis->in_min;
-        int32_t scaled = (int32_t) (((int64_t) delta * (int64_t) axis->scale_mult) >> HID_AXIS_SCALE_SHIFT);
-        return (int16_t) (scaled + HID_AXIS_MIN);
-    }
-
-    int32_t range = axis->in_max - axis->in_min;
-    if (range <= 0) {
-        return HID_AXIS_MIN;
-    }
-    return (int16_t) (((int64_t) (clamped - axis->in_min) * HID_AXIS_RANGE) / range + HID_AXIS_MIN);
+    if (val <= axis->in_min) return HID_AXIS_MIN;
+    if (val >= axis->in_max) return HID_AXIS_MAX;
+    int32_t delta = val - axis->in_min;
+    int32_t scaled = (int32_t)(((int64_t)delta * axis->scale_mult) >> HID_AXIS_SCALE_SHIFT);
+    return (int16_t)(scaled + HID_AXIS_MIN);
 }
 
 static uint8_t next_bit(const hid_gamepad_layout_t *layout) {
@@ -100,6 +139,7 @@ static uint8_t total_button_count(const hid_gamepad_layout_t *layout) {
     return next_bit(layout);
 }
 
+#ifdef ESP_PLATFORM
 /* ═══════════════════════════════════════════════════════════════════════
  *  Descriptor builder
  * ═══════════════════════════════════════════════════════════════════════ */
@@ -128,8 +168,7 @@ static size_t hid_gamepad_desc_size(const hid_gamepad_layout_t *layout) {
     return size;
 }
 
-static size_t hid_gamepad_desc_build(const hid_gamepad_layout_t *layout,
-                                     uint8_t *buf, size_t buf_size) {
+static size_t hid_gamepad_desc_build(const hid_gamepad_layout_t *layout, uint8_t *buf, size_t buf_size) {
     size_t need = hid_gamepad_desc_size(layout);
     if (buf_size < need)
         return 0;
@@ -237,13 +276,13 @@ static size_t hid_gamepad_desc_build(const hid_gamepad_layout_t *layout,
 
     return p;
 }
+#endif /* ESP_PLATFORM */
 
 /* ═══════════════════════════════════════════════════════════════════════
  *  Layout
  * ═══════════════════════════════════════════════════════════════════════ */
 
-bool hid_gamepad_layout_add_button(hid_gamepad_layout_t *layout,
-                                   int32_t on, int32_t off) {
+bool hid_gamepad_layout_add_button(hid_gamepad_layout_t *layout, int32_t on, int32_t off) {
     if (!layout || layout->button_count >= HID_GAMEPAD_MAX_BUTTONS) {
         return false;
     }
@@ -254,9 +293,8 @@ bool hid_gamepad_layout_add_button(hid_gamepad_layout_t *layout,
     return true;
 }
 
-bool hid_gamepad_layout_add_hat(hid_gamepad_layout_t *layout,
-                                int32_t centered,
-                                const int32_t *positions, uint8_t count) {
+bool hid_gamepad_layout_add_hat(hid_gamepad_layout_t *layout, int32_t centered, const int32_t *positions,
+                                uint8_t count) {
     if (!layout || !positions)
         return false;
     if (count == 0 || count > HID_GAMEPAD_MAX_HAT_POSITIONS)
@@ -272,8 +310,7 @@ bool hid_gamepad_layout_add_hat(hid_gamepad_layout_t *layout,
     return true;
 }
 
-bool hid_gamepad_layout_add_switch(hid_gamepad_layout_t *layout,
-                                   const int32_t *values, uint8_t count) {
+bool hid_gamepad_layout_add_switch(hid_gamepad_layout_t *layout, const int32_t *values, uint8_t count) {
     if (!layout || !values)
         return false;
     if (count == 0 || count > HID_GAMEPAD_MAX_SWITCH_POSITIONS)
@@ -289,8 +326,7 @@ bool hid_gamepad_layout_add_switch(hid_gamepad_layout_t *layout,
     return true;
 }
 
-bool hid_gamepad_layout_add_axis(hid_gamepad_layout_t *layout,
-                                 uint8_t usage, int32_t in_min, int32_t in_max) {
+bool hid_gamepad_layout_add_axis(hid_gamepad_layout_t *layout, uint8_t usage, int32_t in_min, int32_t in_max) {
     if (!layout)
         return false;
     if (layout->axis_count >= HID_GAMEPAD_MAX_AXES)
@@ -311,9 +347,8 @@ bool hid_gamepad_layout_add_axis(hid_gamepad_layout_t *layout,
  *  Report
  * ═══════════════════════════════════════════════════════════════════════ */
 
-void hid_gamepad_report_init(hid_gamepad_report_buf_t *report, hid_gamepad_layout_t *layout) {
+void report_init(hid_gamepad_layout_t *layout, hid_gamepad_report_buf_t *report) {
     memset(report, 0, sizeof(*report));
-    report->layout = layout;
     uint8_t btn_bytes = (total_button_count(layout) + 7) / 8;
     uint8_t hat_bytes = (layout->hat_count + 1) / 2; /* 4 bits each, rounded up */
     report->hat_offset = btn_bytes;
@@ -337,143 +372,92 @@ void hid_gamepad_report_init(hid_gamepad_report_buf_t *report, hid_gamepad_layou
     }
 }
 
-void hid_gamepad_report_set_button(hid_gamepad_report_buf_t *report,
-                                   uint8_t index, int32_t raw_value) {
-    if (index >= report->layout->button_count)
-        return;
-    uint8_t bit_pos = report->layout->buttons[index].bit_offset;
-    uint8_t byte_idx = bit_pos / 8;
-    uint8_t bit_idx = bit_pos % 8;
-    if (raw_value >= report->layout->buttons[index].on)
-        report->data[byte_idx] |= (1u << bit_idx);
-    else if (raw_value <= report->layout->buttons[index].off)
-        report->data[byte_idx] &= ~(1u << bit_idx);
-}
-
-void hid_gamepad_report_set_hat(hid_gamepad_report_buf_t *report,
-                                uint8_t hat_index, int32_t raw_value) {
-    if (hat_index >= report->layout->hat_count)
-        return;
-    const hid_gamepad_hat_def_t *hat = &report->layout->hats[hat_index];
-
-    /* Map raw value to HID position: match positions first, then centered, else null */
-    uint8_t hid_val = hat->count; /* null/centered by default */
-    if (raw_value == hat->centered) {
-        /* already null */
-    } else {
-        for (uint8_t i = 0; i < hat->count; i++) {
-            if (raw_value == hat->positions[i]) {
-                hid_val = i;
-                break;
+bool report_set(hid_gamepad_layout_t *layout, hid_gamepad_report_buf_t *report,
+                hid_gamepad_input_t type, uint8_t index, int32_t raw_value) {
+    switch (type) {
+        case HID_GAMEPAD_BUTTON: {
+            if (index >= layout->button_count)
+                return false;
+            uint8_t bit_pos = layout->buttons[index].bit_offset;
+            uint8_t byte_idx = bit_pos / 8;
+            uint8_t bit_idx = bit_pos % 8;
+            if (raw_value >= layout->buttons[index].on)
+                report->data[byte_idx] |= (1u << bit_idx);
+            else if (raw_value <= layout->buttons[index].off)
+                report->data[byte_idx] &= ~(1u << bit_idx);
+            return true;
+        }
+        case HID_GAMEPAD_HAT: {
+            if (index >= layout->hat_count)
+                return false;
+            const hid_gamepad_hat_def_t *hat = &layout->hats[index];
+            uint8_t hid_val = hat->count; /* null/centered by default */
+            if (raw_value == hat->centered) {
+                /* already null */
+            } else {
+                for (uint8_t i = 0; i < hat->count; i++) {
+                    if (raw_value == hat->positions[i]) {
+                        hid_val = i;
+                        break;
+                    }
+                }
             }
+            uint8_t byte_idx = report->hat_offset + index / 2;
+            if (index % 2 == 0)
+                report->data[byte_idx] = (report->data[byte_idx] & 0xF0) | (hid_val & 0x0F);
+            else
+                report->data[byte_idx] = (report->data[byte_idx] & 0x0F) | ((hid_val & 0x0F) << 4);
+            return true;
         }
+        case HID_GAMEPAD_SWITCH: {
+            if (index >= layout->switch_count)
+                return false;
+            hid_gamepad_switch_def_t *sw = &layout->switches[index];
+            uint8_t active = 0;
+            for (uint8_t i = 0; i < sw->count; i++) {
+                if (raw_value == sw->values[i]) {
+                    active = i;
+                    break;
+                }
+            }
+            uint8_t btn_start = sw->button_offset;
+            for (uint8_t i = 0; i < sw->count - 1; i++) {
+                uint8_t btn_idx = btn_start + i;
+                uint8_t byte_idx = btn_idx / 8;
+                uint8_t bit_idx = btn_idx % 8;
+                if (active == i + 1)
+                    report->data[byte_idx] |= (1u << bit_idx);
+                else
+                    report->data[byte_idx] &= ~(1u << bit_idx);
+            }
+            return true;
+        }
+        case HID_GAMEPAD_AXIS: {
+            if (index >= layout->axis_count)
+                return false;
+            const hid_gamepad_axis_def_t *axis = &layout->axes[index];
+            int16_t scaled = scale_axis(axis, raw_value);
+            uint8_t off = report->axis_offset + index * 2;
+            report->data[off] = (uint8_t) (scaled & 0xFF);
+            report->data[off + 1] = (uint8_t) ((uint16_t) scaled >> 8);
+            return true;
+        }
+        default:
+            return false;
     }
-
-    uint8_t byte_idx = report->hat_offset + hat_index / 2;
-    if (hat_index % 2 == 0)
-        report->data[byte_idx] = (report->data[byte_idx] & 0xF0) | (hid_val & 0x0F);
-    else
-        report->data[byte_idx] = (report->data[byte_idx] & 0x0F) | ((hid_val & 0x0F) << 4);
 }
 
-void hid_gamepad_report_set_switch(hid_gamepad_report_buf_t *report,
-                                   uint8_t switch_index, int32_t raw_value) {
-    if (switch_index >= report->layout->switch_count)
-        return;
-    hid_gamepad_switch_def_t *sw = &report->layout->switches[switch_index];
-
-    /* Find which position matches the raw value */
-    uint8_t active = 0; /* 0 = no button (values[0] or unknown) */
-    for (uint8_t i = 0; i < sw->count; i++) {
-        if (raw_value == sw->values[i]) {
-            active = i; /* 0 = no button, 1..count-1 = button index */
-            break;
-        }
+#ifdef ESP_PLATFORM
+esp_err_t hid_gamepad_set(hid_gamepad_input_t type, uint8_t index, int32_t raw_value) {
+    if (!s_mounted) {
+        return ESP_ERR_INVALID_STATE;
     }
-
-    uint8_t btn_start = sw->button_offset;
-
-    for (uint8_t i = 0; i < sw->count - 1; i++) {
-        uint8_t btn_idx = btn_start + i;
-        uint8_t byte_idx = btn_idx / 8;
-        uint8_t bit_idx = btn_idx % 8;
-        if (active == i + 1)
-            report->data[byte_idx] |= (1u << bit_idx);
-        else
-            report->data[byte_idx] &= ~(1u << bit_idx);
-    }
-}
-
-void hid_gamepad_report_set_axis(hid_gamepad_report_buf_t *report,
-                                 uint8_t axis_index, int32_t raw_value) {
-    if (axis_index >= report->layout->axis_count)
-        return;
-    const hid_gamepad_axis_def_t *axis = &report->layout->axes[axis_index];
-    int16_t scaled = scale_axis(axis, raw_value);
-    uint8_t off = report->axis_offset + axis_index * 2;
-    report->data[off] = (uint8_t) (scaled & 0xFF);
-    report->data[off + 1] = (uint8_t) ((uint16_t) scaled >> 8);
+    return report_set(&s_layout, &s_report_buf, type, index, raw_value) ? ESP_OK : ESP_FAIL;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
  *  ESP-IDF USB Driver
  * ═══════════════════════════════════════════════════════════════════════ */
-
-#if defined(ESP_PLATFORM)
-
-#include <esp_log.h>
-#include <esp_private/usb_phy.h>
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
-#include <tusb.h>
-#include <class/hid/hid_device.h>
-
-/* Task defaults */
-#define DEFAULT_TASK_PRIORITY 5
-#define DEFAULT_TASK_STACK    4096
-#define DEFAULT_TASK_CORE     tskNO_AFFINITY
-
-#define CONFIG_TOTAL_LEN (TUD_CONFIG_DESC_LEN + TUD_HID_DESC_LEN)
-
-static const char *TAG = "hid_gamepad";
-
-/* USB descriptor globals (populated during init) */
-
-enum {
-    STR_IDX_LANGID = 0,
-    STR_IDX_MANUFACTURER,
-    STR_IDX_PRODUCT,
-    STR_IDX_SERIAL,
-    STR_IDX_COUNT,
-};
-
-enum {
-    ITF_NUM_HID = 0,
-    ITF_NUM_TOTAL,
-};
-
-static tusb_desc_device_t s_device_desc;
-static uint8_t s_config_desc[CONFIG_TOTAL_LEN];
-static const char *s_strings[STR_IDX_COUNT];
-static uint8_t s_report_desc[128];
-static uint16_t s_report_desc_size = 0;
-
-/* Device state */
-
-static usb_phy_handle_t s_phy;
-static TaskHandle_t s_task;
-static TaskHandle_t s_joiner;
-static volatile bool s_mounted;
-static volatile bool s_running;
-static volatile bool s_busy;
-static volatile bool s_report;
-static bool s_initialized;
-static uint16_t s_report_size;
-static uint8_t s_report_data[HID_GAMEPAD_MAX_REPORT_LENGTH];
-static hid_gamepad_layout_t s_layout;
-static hid_gamepad_report_buf_t s_report_buf;
-static hid_gamepad_report_cb_t s_report_cb;
-static void *s_report_cb_ctx;
 
 /* ── TinyUSB device task ──────────────────────────────────────────── */
 
@@ -481,14 +465,11 @@ static void try_send_report(void) {
     if (!s_mounted || !s_report || s_busy) {
         return;
     }
-    s_report_cb(&s_report_buf, s_report_cb_ctx);
-    s_report_size = s_report_buf.size;
-    memcpy(s_report_data, s_report_buf.data, s_report_buf.size);
-    if (s_report_size == 0) {
+    if (s_report_buf.size == 0) {
         s_report = false;
         return;
     }
-    if (tud_hid_report(0, s_report_data, s_report_size)) {
+    if (tud_hid_report(0, s_report_buf.data, s_report_buf.size)) {
         s_report = false;
         s_busy = true;
     }
@@ -594,11 +575,11 @@ uint16_t tud_hid_get_report_cb(uint8_t instance, uint8_t report_id,
     (void) report_type;
     (void) buffer;
     (void) reqlen;
-    if (reqlen < s_report_size || s_report_size == 0) {
+    if (reqlen < s_report_buf.size || s_report_buf.size == 0) {
         return 0;
     }
-    memcpy(buffer, s_report_data, s_report_size);
-    return s_report_size;
+    memcpy(buffer, s_report_buf.data, s_report_buf.size);
+    return s_report_buf.size;
 }
 
 void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id,
@@ -678,23 +659,15 @@ esp_err_t hid_gamepad_init(const hid_gamepad_config_t *config) {
         ESP_LOGE(TAG, "layout must be provided");
         return ESP_ERR_INVALID_ARG;
     }
-    if (!config->report_cb) {
-        ESP_LOGE(TAG, "report_cb must be provided");
-        return ESP_ERR_INVALID_ARG;
-    }
     if (s_initialized) {
         ESP_LOGE(TAG, "already initialized");
         return ESP_ERR_INVALID_STATE;
     }
 
-    /* 1. Build descriptors */
+    /* 1. Build descriptors and deep copy layout */
     build_descriptors(config);
-
-    /* 1b. Deep-copy the layout so callers don't need to keep it alive */
     s_layout = *config->layout;
-    hid_gamepad_report_init(&s_report_buf, &s_layout);
-    s_report_cb = config->report_cb;
-    s_report_cb_ctx = config->report_cb_ctx;
+    report_init(&s_layout, &s_report_buf);
 
     /* 2. USB PHY — must be done before tusb_init() on ESP32-S2/S3 */
     const usb_phy_config_t phy_conf = {
@@ -759,12 +732,8 @@ esp_err_t hid_gamepad_deinit(void) {
     s_initialized = false;
     s_mounted = false;
     s_report_desc_size = 0;
-    s_report_size = 0;
     s_report = false;
     s_busy = false;
-    s_report_cb = NULL;
-    s_report_cb_ctx = NULL;
-    memset(&s_layout, 0, sizeof(s_layout));
 
     ESP_LOGI(TAG, "deinitialized");
     return ESP_OK;
@@ -787,12 +756,9 @@ esp_err_t hid_gamepad_update(const hid_gamepad_config_t *config) {
     s_mounted = false;
     s_report = false;
     s_busy = false;
-    s_report_size = 0;
     build_descriptors(config);
     s_layout = *config->layout;
-    hid_gamepad_report_init(&s_report_buf, &s_layout);
-    s_report_cb = config->report_cb;
-    s_report_cb_ctx = config->report_cb_ctx;
+    report_init(&s_layout, &s_report_buf);
 
     vTaskDelay(pdMS_TO_TICKS(150));
     tud_connect();
@@ -801,5 +767,4 @@ esp_err_t hid_gamepad_update(const hid_gamepad_config_t *config) {
              s_device_desc.idVendor, s_device_desc.idProduct, s_report_desc_size);
     return ESP_OK;
 }
-
 #endif /* ESP_PLATFORM */
