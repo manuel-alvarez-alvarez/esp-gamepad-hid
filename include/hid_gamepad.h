@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <esp_err.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -21,6 +22,15 @@ extern "C" {
 #define HID_GAMEPAD_MAX_SWITCH_POSITIONS  8
 
 #define HID_GAMEPAD_MAX_REPORT_LENGTH 64
+
+/* ── Input types ──────────────────────────────────────────────────── */
+
+typedef enum {
+    HID_GAMEPAD_BUTTON,
+    HID_GAMEPAD_HAT,
+    HID_GAMEPAD_SWITCH,
+    HID_GAMEPAD_AXIS,
+} hid_gamepad_input_t;
 
 /* ── Layout definition types ───────────────────────────────────────── */
 
@@ -60,58 +70,12 @@ typedef struct {
     hid_gamepad_axis_def_t axes[HID_GAMEPAD_MAX_AXES];
 } hid_gamepad_layout_t;
 
-/* ── Layout construction ───────────────────────────────────────────── */
-
-/** Add a button with per-button on/off thresholds (raw >= on → pressed, raw <= off → released). */
-bool hid_gamepad_layout_add_button(hid_gamepad_layout_t *layout,
-                                   int32_t on, int32_t off);
-
-/** Add a hat switch. positions[0]=N, [1]=NE, … clockwise. centered = raw value for null state. */
-bool hid_gamepad_layout_add_hat(hid_gamepad_layout_t *layout,
-                                int32_t centered,
-                                const int32_t *positions, uint8_t count);
-
-/** Add a switch. values[0]=no button, values[1..count-1]=button N. Maps to HID buttons. */
-bool hid_gamepad_layout_add_switch(hid_gamepad_layout_t *layout,
-                                   const int32_t *values, uint8_t count);
-
-/** Add a 16-bit signed axis with device raw range [in_min, in_max] scaled to [-32767, 32767]. */
-bool hid_gamepad_layout_add_axis(hid_gamepad_layout_t *layout,
-                                 uint8_t usage, int32_t in_min, int32_t in_max);
-
-/* ── Report buffer ─────────────────────────────────────────────────── */
-
 typedef struct {
-    hid_gamepad_layout_t *layout;
     uint16_t size;
     uint8_t hat_offset;
     uint8_t axis_offset;
     uint8_t data[HID_GAMEPAD_MAX_REPORT_LENGTH];
 } hid_gamepad_report_buf_t;
-
-/** Callback invoked by the library each USB frame. Update report values here. */
-typedef void (*hid_gamepad_report_cb_t)(hid_gamepad_report_buf_t *report, void *user_ctx);
-
-/* ── Field setters (take raw device values) ────────────────────────── */
-
-void hid_gamepad_report_set_button(hid_gamepad_report_buf_t *report,
-                                   uint8_t index, int32_t raw_value);
-
-void hid_gamepad_report_set_hat(hid_gamepad_report_buf_t *report,
-                                uint8_t hat_index, int32_t raw_value);
-
-void hid_gamepad_report_set_switch(hid_gamepad_report_buf_t *report,
-                                    uint8_t switch_index, int32_t raw_value);
-
-void hid_gamepad_report_set_axis(hid_gamepad_report_buf_t *report,
-                                 uint8_t axis_index, int32_t raw_value);
-
-/* ═══════════════════════════════════════════════════════════════════════
- *  ESP-IDF USB Driver
- * ═══════════════════════════════════════════════════════════════════════ */
-
-#if defined(ESP_PLATFORM)
-#include <esp_err.h>
 
 typedef struct {
     uint16_t vid; /* USB vendor  ID  (0 = hash of manufacturer) */
@@ -120,8 +84,6 @@ typedef struct {
     const char *product; /* Product string      (default: "HID Gamepad") */
     const char *serial; /* Serial string       (default: "000000") */
     const hid_gamepad_layout_t *layout; /* Required: HID report layout */
-    hid_gamepad_report_cb_t report_cb; /* Required: called each USB frame to update the report */
-    void *report_cb_ctx; /* Optional: user context passed to report_cb */
     int task_priority; /* 0 = default (5) */
     int task_core; /* -1 = no affinity */
     size_t task_stack_size; /* 0 = default (4096) */
@@ -135,13 +97,30 @@ typedef struct {
     .product                = "HID Gamepad",                \
     .serial                 = "000000",                     \
     .layout                 = NULL,                         \
-    .report_cb              = NULL,                         \
-    .report_cb_ctx          = NULL,                         \
     .task_priority          = 0,                            \
     .task_core              = -1,                           \
     .task_stack_size        = 0,                            \
     .poll_interval_ms       = 0,                            \
 }
+
+/* ── Layout construction ───────────────────────────────────────────── */
+
+/** Add a button with per-button on/off thresholds (raw >= on → pressed, raw <= off → released). */
+bool hid_gamepad_layout_add_button(hid_gamepad_layout_t *layout, int32_t on, int32_t off);
+
+/** Add a hat switch. positions[0]=N, [1]=NE, … clockwise. centered = raw value for null state. */
+bool hid_gamepad_layout_add_hat(hid_gamepad_layout_t *layout, int32_t centered, const int32_t *positions,
+                                uint8_t count);
+
+/** Add a switch. values[0]=no button, values[1..count-1]=button N. Maps to HID buttons. */
+bool hid_gamepad_layout_add_switch(hid_gamepad_layout_t *layout, const int32_t *values, uint8_t count);
+
+/** Add a 16-bit signed axis with device raw range [in_min, in_max] scaled to [-32767, 32767]. */
+bool hid_gamepad_layout_add_axis(hid_gamepad_layout_t *layout, uint8_t usage, int32_t in_min, int32_t in_max);
+
+/* ═══════════════════════════════════════════════════════════════════════
+ *  ESP-IDF USB Driver
+ * ═══════════════════════════════════════════════════════════════════════ */
 
 esp_err_t hid_gamepad_init(const hid_gamepad_config_t *config);
 
@@ -149,7 +128,7 @@ esp_err_t hid_gamepad_update(const hid_gamepad_config_t *config);
 
 esp_err_t hid_gamepad_deinit(void);
 
-#endif /* ESP_PLATFORM */
+esp_err_t hid_gamepad_set(hid_gamepad_input_t type, uint8_t index, int32_t raw_value);
 
 #ifdef __cplusplus
 }
